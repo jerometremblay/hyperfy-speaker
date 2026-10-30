@@ -1,0 +1,595 @@
+diff --git a/src/client/components/Sidebar.js b/src/client/components/Sidebar.js
+index d09c109..3f03471 100644
+--- a/src/client/components/Sidebar.js
++++ b/src/client/components/Sidebar.js
+@@ -69,6 +69,7 @@ import { useRank } from './useRank'
+ import { Ranks } from '../../core/extras/ranks'
+ import { PromptBoxPanel, UndoPromptBox } from './PromptBoxPanel'
+ import { isPromptBox } from '../../core/extras/promptBoxTools'
++import { AudioOutputField } from './AudioOutputField'
+ 
+ const mainSectionPanes = ['prefs']
+ const worldSectionPanes = ['world', 'docs', 'apps', 'add']
+@@ -695,6 +696,7 @@ function Prefs({ world, hidden }) {
+           />
+         )}
+         <Group label='Audio' />
++        <AudioOutputField world={world} />
+         <FieldRange
+           label='Music'
+           hint='Adjust general music volume'
+diff --git a/src/core/systems/ClientAudio.js b/src/core/systems/ClientAudio.js
+index cbfe2e1..64649d4 100644
+--- a/src/core/systems/ClientAudio.js
++++ b/src/core/systems/ClientAudio.js
+@@ -1,6 +1,7 @@
+ import * as THREE from '../extras/three'
+ 
+ import { System } from './System'
++import { storage } from '../storage'
+ 
+ const up = new THREE.Vector3(0, 1, 0)
+ const v1 = new THREE.Vector3()
+@@ -40,6 +41,7 @@ export class ClientAudio extends System {
+       this.listener.setOrientation(0, 0, -1, 0, 1, 0)
+     }
+     this.lastDelta = 0
++    this.outputDevice = ''
+ 
+     this.queue = []
+     this.unlocked = this.ctx.state !== 'suspended'
+@@ -97,6 +99,41 @@ export class ClientAudio extends System {
+ 
+   async init() {
+     this.world.prefs.on('change', this.onPrefsChange)
++    const outputDevice = storage.get('audioOutputDevice', '')
++    if (outputDevice && this.ctx.setSinkId) {
++      try {
++        await this.setOutputDevice(outputDevice)
++      } catch {
++        console.warn('[audio] saved output device is unavailable')
++      }
++    }
++  }
++
++  async getOutputDevices() {
++    if (!this.ctx.setSinkId || !navigator.mediaDevices?.enumerateDevices) {
++      throw new Error('This browser does not support choosing an audio output.')
++    }
++    let devices = await navigator.mediaDevices.enumerateDevices()
++    if (!devices.some(device => device.kind === 'audiooutput' && device.label)) {
++      // Browsers require permission before revealing output device names.
++      const access = await navigator.mediaDevices.getUserMedia({ audio: true })
++      access.getTracks().forEach(track => track.stop())
++      devices = await navigator.mediaDevices.enumerateDevices()
++    }
++    return devices.filter(
++      device =>
++        device.kind === 'audiooutput' &&
++        device.deviceId !== 'default' &&
++        device.deviceId !== 'communications' &&
++        !/Hyperfy Speaker|BlackHole/i.test(device.label)
++    )
++  }
++
++  async setOutputDevice(deviceId) {
++    if (!this.ctx.setSinkId) throw new Error('This browser does not support choosing an audio output.')
++    await this.ctx.setSinkId(deviceId)
++    this.outputDevice = deviceId
++    storage.set('audioOutputDevice', deviceId)
+   }
+ 
+   start() {
+diff --git a/src/core/systems/ClientLiveKit.js b/src/core/systems/ClientLiveKit.js
+index 21dc2f4..8451e3e 100644
+--- a/src/core/systems/ClientLiveKit.js
++++ b/src/core/systems/ClientLiveKit.js
+@@ -4,6 +4,7 @@ import * as THREE from '../extras/three'
+ import { System } from './System'
+ import { isBoolean } from 'lodash-es'
+ import { TrackSource } from 'livekit-server-sdk'
++import { SPEAKER_PREFIX, SpeakerAudio } from '../extras/SpeakerAudio'
+ 
+ const v1 = new THREE.Vector3()
+ const v2 = new THREE.Vector3()
+@@ -24,6 +25,7 @@ export class ClientLiveKit extends System {
+     this.levels = {}
+     this.muted = new Set()
+     this.voices = new Map() // playerId -> PlayerVoice
++    this.speakers = new Map() // publisher identity -> SpeakerAudio
+     this.screens = []
+     this.screenNodes = new Set() // Video
+   }
+@@ -121,6 +123,7 @@ export class ClientLiveKit extends System {
+     this.voices.forEach(voice => {
+       voice.lateUpdate(delta)
+     })
++    this.speakers.forEach(speaker => speaker.lateUpdate())
+   }
+ 
+   setMicrophoneEnabled(value) {
+@@ -196,6 +199,12 @@ export class ClientLiveKit extends System {
+   onTrackSubscribed = (track, publication, participant) => {
+     // console.log('onTrackSubscribed', track, publication, participant)
+     const playerId = participant.identity
++    if (playerId.startsWith(SPEAKER_PREFIX)) {
++      if (track.kind !== 'audio' || track.source !== 'microphone') return
++      this.speakers.get(playerId)?.destroy()
++      this.speakers.set(playerId, new SpeakerAudio(this.world, playerId.slice(SPEAKER_PREFIX.length), track))
++      return
++    }
+     const player = this.world.entities.getPlayer(playerId)
+     if (!player) return console.error('onTrackSubscribed failed: no player')
+     const world = this.world
+@@ -216,6 +225,14 @@ export class ClientLiveKit extends System {
+   onTrackUnsubscribed = (track, publication, participant) => {
+     // console.log('onTrackUnsubscribed todo')
+     const playerId = participant.identity
++    if (playerId.startsWith(SPEAKER_PREFIX)) {
++      const speaker = this.speakers.get(playerId)
++      if (speaker?.track === track) {
++        speaker.destroy()
++        this.speakers.delete(playerId)
++      }
++      return
++    }
+     if (track.source === 'microphone') {
+       const voice = this.voices.get(playerId)
+       voice?.destroy()
+@@ -264,6 +281,8 @@ export class ClientLiveKit extends System {
+   }
+ 
+   destroy() {
++    this.speakers.forEach(speaker => speaker.destroy())
++    this.speakers.clear()
+     this.voices.forEach(voice => {
+       voice.destroy()
+     })
+diff --git a/src/core/systems/ServerLiveKit.js b/src/core/systems/ServerLiveKit.js
+index 85bcc34..081c14f 100644
+--- a/src/core/systems/ServerLiveKit.js
++++ b/src/core/systems/ServerLiveKit.js
+@@ -46,6 +46,27 @@ export class ServerLiveKit extends System {
+     return data
+   }
+ 
++  async createSpeakerSession(entityId) {
++    if (!this.enabled) throw Object.assign(new Error('LiveKit is not configured'), { statusCode: 503 })
++    const entity = this.world.entities.get(entityId)
++    const blueprint = entity?.isApp && this.world.blueprints.get(entity.data.blueprint)
++    if (!blueprint || blueprint.scene || blueprint.disabled) {
++      throw Object.assign(new Error('Active speaker app not found'), { statusCode: 404 })
++    }
++    const identity = `speaker:${entityId}`
++    const token = new AccessToken(this.apiKey, this.apiSecret, { identity, ttl: '15m' })
++    token.addGrant({
++      room: this.roomId,
++      roomJoin: true,
++      canSubscribe: false,
++      canPublish: true,
++      canPublishSources: [TrackSource.MICROPHONE],
++      canUpdateOwnMetadata: false,
++      canPublishData: false,
++    })
++    return { wsUrl: this.wsUrl, token: await token.toJwt(), identity, entityId }
++  }
++
+   setMuted(playerId, muted) {
+     if (muted && !this.muted.has(playerId)) {
+       this.muted.add(playerId)
+diff --git a/src/server/agent-api.js b/src/server/agent-api.js
+index 54a9d06..f770191 100644
+--- a/src/server/agent-api.js
++++ b/src/server/agent-api.js
+@@ -247,6 +247,17 @@ export async function agentAPI(fastify, { world, assets, readToken, writeToken }
+     202
+   )
+   route('GET', '/entities/:id', 'getEntity', { params }, async request => entity(request.params.id).serialize())
++  route(
++    'POST',
++    '/entities/:id/speaker-session',
++    'createSpeakerSession',
++    { params, body: body({}) },
++    async request => {
++      entity(request.params.id)
++      if (!world.livekit?.enabled) fail(503, 'LiveKit is not configured')
++      return world.livekit.createSpeakerSession(request.params.id)
++    }
++  )
+   route(
+     'POST',
+     '/apps',
+diff --git a/src/server/agent-api.test.mjs b/src/server/agent-api.test.mjs
+index fee9827..8117bad 100644
+--- a/src/server/agent-api.test.mjs
++++ b/src/server/agent-api.test.mjs
+@@ -66,6 +66,22 @@ test('disabled by default; tokens separate read and write access', async t => {
+   assert.equal(sent.length, 0)
+ })
+ 
++test('speaker sessions require write access, an app instance and configured LiveKit', async t => {
++  const { call, world } = await setup(t)
++  const created = (await call('POST', '/entities', { blueprint: 'box' })).json()
++  const endpoint = `/entities/${created.id}/speaker-session`
++  assert.equal((await call('POST', endpoint, {}, 'reader')).statusCode, 403)
++  assert.equal((await call('POST', endpoint, {}, 'wrong')).statusCode, 401)
++  assert.equal((await call('POST', '/entities/missing/speaker-session', {})).statusCode, 404)
++  assert.equal((await call('POST', endpoint, {})).statusCode, 503)
++  world.livekit = { enabled: true, createSpeakerSession: async id => ({ entityId: id, token: 'audio-token' }) }
++  const session = await call('POST', endpoint, {})
++  assert.equal(session.statusCode, 200)
++  assert.deepEqual(session.json(), { entityId: created.id, token: 'audio-token' })
++  assert.equal(session.headers['cache-control'], 'no-store')
++  assert.equal((await call('POST', endpoint, { unexpected: true })).statusCode, 400)
++})
++
+ test('create, move, and remove use broadcasts and persistence tracking', async t => {
+   const { call, world, sent } = await setup(t)
+   const created = await call('POST', '/entities', { blueprint: 'box' })
+diff --git a/src/core/extras/SpeakerAudio.js b/src/core/extras/SpeakerAudio.js
+new file mode 100644
+index 0000000..3b7bc2d
+--- /dev/null
++++ b/src/core/extras/SpeakerAudio.js
+@@ -0,0 +1,70 @@
++import * as THREE from './three'
++
++// Publisher identities are minted by the server for an existing app instance.
++export const SPEAKER_PREFIX = 'speaker:'
++
++export class SpeakerAudio {
++  constructor(world, entityId, track) {
++    this.world = world
++    this.entityId = entityId
++    this.track = track
++    this.position = new THREE.Vector3()
++    this.orientation = new THREE.Vector3()
++    this.quaternion = new THREE.Quaternion()
++    this.gain = world.audio.ctx.createGain()
++    this.gain.gain.value = 0
++    this.panner = world.audio.ctx.createPanner()
++    this.panner.panningModel = 'HRTF'
++    this.panner.distanceModel = 'linear'
++    this.panner.refDistance = 1
++    this.panner.maxDistance = 40
++    this.panner.rolloffFactor = 1
++    this.panner.coneInnerAngle = 360
++    this.panner.coneOuterAngle = 360
++    this.lateUpdate(true)
++    // Chrome needs the normal LiveKit playback attachment to start remote audio
++    // playout. Mute the SDK's separate output; our spatial path handles playback.
++    this.track.setAudioContext(world.audio.ctx)
++    this.track.setVolume(0)
++    this.playbackElement = this.track.attach()
++    this.source = world.audio.ctx.createMediaStreamSource(new MediaStream([track.mediaStreamTrack]))
++    this.source.connect(this.gain)
++    this.gain.connect(this.panner)
++    this.panner.connect(world.audio.groupGains.music)
++  }
++
++  lateUpdate(immediate = false) {
++    const entity = this.world.entities.get(this.entityId)
++    const active = entity?.isApp && !entity.crashed && !entity.building && !entity.blueprint?.disabled
++    this.gain.gain.value = active && !this.track.isMuted ? 1 : 0
++    if (!active || !entity.root?.matrixWorld) return
++    this.position.setFromMatrixPosition(entity.root.matrixWorld)
++    this.quaternion.setFromRotationMatrix(entity.root.matrixWorld)
++    this.orientation.set(0, 0, -1).applyQuaternion(this.quaternion)
++    const audio = this.world.audio
++    if (this.panner.positionX) {
++      const method = immediate ? 'setValueAtTime' : 'linearRampToValueAtTime'
++      const time = audio.ctx.currentTime + (immediate ? 0 : audio.lastDelta)
++      for (const [name, value] of [
++        ['positionX', this.position.x],
++        ['positionY', this.position.y],
++        ['positionZ', this.position.z],
++        ['orientationX', this.orientation.x],
++        ['orientationY', this.orientation.y],
++        ['orientationZ', this.orientation.z],
++      ]) {
++        this.panner[name][method](value, time)
++      }
++    } else {
++      this.panner.setPosition(this.position.x, this.position.y, this.position.z)
++      this.panner.setOrientation(this.orientation.x, this.orientation.y, this.orientation.z)
++    }
++  }
++
++  destroy() {
++    this.track.detach(this.playbackElement)
++    this.source.disconnect()
++    this.gain.disconnect()
++    this.panner.disconnect()
++  }
++}
+diff --git a/src/core/extras/SpeakerAudio.test.mjs b/src/core/extras/SpeakerAudio.test.mjs
+new file mode 100644
+index 0000000..bbba6a8
+--- /dev/null
++++ b/src/core/extras/SpeakerAudio.test.mjs
+@@ -0,0 +1,111 @@
++import assert from 'node:assert/strict'
++import test from 'node:test'
++import { build } from 'esbuild'
++import { fileURLToPath } from 'node:url'
++
++const bundle = await build({
++  entryPoints: [fileURLToPath(new URL('./SpeakerAudio.js', import.meta.url))],
++  bundle: true, format: 'esm', platform: 'node', write: false,
++})
++const { SpeakerAudio } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString('base64')}`)
++
++function setup(t, legacy = false) {
++  t.mock.method(globalThis, 'MediaStream', class { constructor(tracks) { this.tracks = tracks } })
++  const connections = []
++  const parameters = {}
++  const node = name => ({
++    name, gain: { value: 0 }, disconnected: false,
++    connect(target) { connections.push([name, target.name]) },
++    disconnect() { this.disconnected = true },
++  })
++  const panner = node('panner')
++  if (legacy) {
++    panner.setPosition = (...values) => { parameters.position = values }
++    panner.setOrientation = (...values) => { parameters.orientation = values }
++  } else {
++    for (const key of ['positionX', 'positionY', 'positionZ', 'orientationX', 'orientationY', 'orientationZ']) {
++      panner[key] = {
++        setValueAtTime(value) { parameters[key] = value },
++        linearRampToValueAtTime(value) { parameters[key] = value },
++      }
++    }
++  }
++  const source = node('source')
++  const gain = node('gain')
++  const entity = {
++    isApp: true, blueprint: {}, root: {
++      matrixWorld: { elements: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 12, 1, -4, 1] },
++    },
++  }
++  const entities = new Map([['speaker', entity]])
++  const playbackElement = {}
++  const playback = { attached: false, context: null, volume: 1, detached: null }
++  const track = {
++    mediaStreamTrack: 'remote-track', isMuted: false,
++    setAudioContext(context) { playback.context = context },
++    setVolume(volume) { playback.volume = volume },
++    attach() {
++      assert.equal(playback.volume, 0, 'mute the SDK output before starting playback')
++      playback.attached = true
++      return playbackElement
++    },
++    detach(element) { playback.detached = element; playback.attached = false },
++  }
++  const world = {
++    entities: { get: id => entities.get(id) },
++    audio: {
++      lastDelta: 0.01, groupGains: { music: node('music') },
++      ctx: { currentTime: 1, createGain: () => gain, createPanner: () => panner,
++        createMediaStreamSource: stream => { assert.deepEqual(stream.tracks, ['remote-track']); return source },
++      },
++    },
++  }
++  const speaker = new SpeakerAudio(world, 'speaker', track)
++  return { speaker, connections, parameters, gain, entity, entities, source, panner, track,
++    playback, playbackElement, world }
++}
++
++// Node has no browser MediaStream; the mock is limited to this file's tests.
++globalThis.MediaStream ??= class {}
++
++test('speaker audio has one path through spatial processing and the music group', t => {
++  const { connections, parameters, gain } = setup(t)
++  assert.deepEqual(connections, [['source', 'gain'], ['gain', 'panner'], ['panner', 'music']])
++  assert.equal(gain.gain.value, 1)
++  assert.deepEqual([parameters.positionX, parameters.positionY, parameters.positionZ], [12, 1, -4])
++})
++
++test('movement and rebuilt app roots update the source; disabled/deleted/muted speakers are silent', t => {
++  const { speaker, entity, entities, gain, parameters, track } = setup(t)
++  entity.root.matrixWorld.elements[12] = 20
++  speaker.lateUpdate()
++  assert.equal(parameters.positionX, 20)
++  entity.blueprint.disabled = true
++  speaker.lateUpdate()
++  assert.equal(gain.gain.value, 0)
++  entity.blueprint.disabled = false
++  track.isMuted = true
++  speaker.lateUpdate()
++  assert.equal(gain.gain.value, 0)
++  track.isMuted = false
++  entities.delete('speaker')
++  speaker.lateUpdate()
++  assert.equal(gain.gain.value, 0)
++})
++
++test('legacy Web Audio positions work and unsubscribe releases every node', t => {
++  const { speaker, parameters, source, gain, panner } = setup(t, true)
++  assert.deepEqual(parameters.position, [12, 1, -4])
++  speaker.destroy()
++  assert.ok(source.disconnected && gain.disconnected && panner.disconnected)
++})
++
++test('speaker starts browser playout through a muted SDK attachment and detaches its own element', t => {
++  const { speaker, playback, playbackElement, world } = setup(t)
++  assert.equal(playback.attached, true)
++  assert.equal(playback.context, world.audio.ctx)
++  assert.equal(playback.volume, 0)
++  speaker.destroy()
++  assert.equal(playback.detached, playbackElement)
++  assert.equal(playback.attached, false)
++})
+diff --git a/src/core/systems/ServerLiveKit.speaker.test.mjs b/src/core/systems/ServerLiveKit.speaker.test.mjs
+new file mode 100644
+index 0000000..33d3740
+--- /dev/null
++++ b/src/core/systems/ServerLiveKit.speaker.test.mjs
+@@ -0,0 +1,34 @@
++import assert from 'node:assert/strict'
++import test from 'node:test'
++import { build } from 'esbuild'
++import { fileURLToPath } from 'node:url'
++import { TokenVerifier } from 'livekit-server-sdk'
++
++const bundle = await build({
++  entryPoints: [fileURLToPath(new URL('./ServerLiveKit.js', import.meta.url))],
++  bundle: true, format: 'esm', platform: 'node', write: false,
++})
++const { ServerLiveKit } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString('base64')}`)
++
++test('speaker credentials publish only audio to the current world room', async () => {
++  const world = {
++    entities: { get: id => id === 'box' ? { isApp: true, data: { blueprint: 'app' } } : null },
++    blueprints: { get: () => ({ id: 'app' }) },
++  }
++  const livekit = new ServerLiveKit(world)
++  Object.assign(livekit, { enabled: true, wsUrl: 'ws://localhost:7880', apiKey: 'test-key', apiSecret: 'test-secret' })
++  const session = await livekit.createSpeakerSession('box')
++  const claims = await new TokenVerifier('test-key', 'test-secret').verify(session.token)
++  assert.equal(claims.sub, 'speaker:box')
++  assert.equal(claims.video.room, livekit.roomId)
++  assert.equal(claims.video.canSubscribe, false)
++  assert.equal(claims.video.canPublishData, false)
++  assert.equal(claims.video.canUpdateOwnMetadata, false)
++  assert.deepEqual(claims.video.canPublishSources, ['microphone'])
++  assert.ok(claims.exp - claims.nbf <= 15 * 60)
++  await assert.rejects(livekit.createSpeakerSession('missing'), { statusCode: 404 })
++  world.blueprints.get = () => ({ disabled: true })
++  await assert.rejects(livekit.createSpeakerSession('box'), { statusCode: 404 })
++  livekit.enabled = false
++  await assert.rejects(livekit.createSpeakerSession('box'), { statusCode: 503 })
++})
+diff --git a/src/core/systems/ClientAudio.output.test.mjs b/src/core/systems/ClientAudio.output.test.mjs
+new file mode 100644
+index 0000000..27af9e4
+--- /dev/null
++++ b/src/core/systems/ClientAudio.output.test.mjs
+@@ -0,0 +1,69 @@
++import assert from 'node:assert/strict'
++import test from 'node:test'
++import { build } from 'esbuild'
++import { fileURLToPath } from 'node:url'
++
++const saved = new Map()
++globalThis.window = {}
++globalThis.localStorage = {
++  getItem: key => saved.get(key),
++  setItem: (key, value) => saved.set(key, value),
++  removeItem: key => saved.delete(key),
++}
++const bundle = await build({
++  entryPoints: [fileURLToPath(new URL('./ClientAudio.js', import.meta.url))],
++  bundle: true, format: 'esm', platform: 'node', write: false,
++})
++const { ClientAudio } = await import(`data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].contents).toString('base64')}`)
++
++function setup(t) {
++  saved.clear()
++  const ctx = {
++    state: 'running', destination: {},
++    listener: { setPosition() {}, setOrientation() {} },
++    createGain: () => ({ gain: {}, connect() {} }),
++    async setSinkId(id) {
++      if (id === 'missing') throw new Error('Device not available')
++      this.sinkId = id
++    },
++  }
++  t.mock.method(globalThis, 'AudioContext', class { constructor() { return ctx } })
++  const world = { prefs: { music: 1, sfx: 1, voice: 1, on() {} } }
++  return new ClientAudio(world)
++}
++
++globalThis.AudioContext ??= class {}
++
++test('playback selection persists only after the browser accepts the physical device', async t => {
++  const audio = setup(t)
++  await audio.setOutputDevice('headphones')
++  assert.equal(audio.ctx.sinkId, 'headphones')
++  assert.equal(saved.get('audioOutputDevice'), '"headphones"')
++  await assert.rejects(audio.setOutputDevice('missing'))
++  assert.equal(audio.outputDevice, 'headphones')
++  assert.equal(saved.get('audioOutputDevice'), '"headphones"')
++})
++
++test('device discovery closes its temporary capture and excludes loopback outputs', async t => {
++  const audio = setup(t)
++  let calls = 0
++  let stopped = false
++  const original = navigator.mediaDevices
++  Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: {
++    async enumerateDevices() {
++      calls++
++      return calls === 1 ? [{ kind: 'audiooutput', deviceId: 'default', label: '' }] : [
++        { kind: 'audiooutput', deviceId: 'default', label: 'Default' },
++        { kind: 'audiooutput', deviceId: 'loopback', label: 'Hyperfy Speaker' },
++        { kind: 'audiooutput', deviceId: 'blackhole', label: 'BlackHole 2ch' },
++        { kind: 'audiooutput', deviceId: 'headphones', label: 'Headphones' },
++        { kind: 'audioinput', deviceId: 'microphone', label: 'Microphone' },
++      ]
++    },
++    async getUserMedia() { return { getTracks: () => [{ stop() { stopped = true } }] } },
++  } })
++  t.after(() => Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: original }))
++  const devices = await audio.getOutputDevices()
++  assert.equal(stopped, true)
++  assert.deepEqual(devices.map(device => device.deviceId), ['headphones'])
++})
+diff --git a/src/client/components/AudioOutputField.js b/src/client/components/AudioOutputField.js
+new file mode 100644
+index 0000000..a0ac5a0
+--- /dev/null
++++ b/src/client/components/AudioOutputField.js
+@@ -0,0 +1,53 @@
++import { useState } from 'react'
++import { FieldBtn, FieldSelect } from './Fields'
++
++export function AudioOutputField({ world }) {
++  const [devices, setDevices] = useState(null)
++  const [selected, setSelected] = useState(world.audio.outputDevice)
++  const [error, setError] = useState(null)
++  const [busy, setBusy] = useState(false)
++  if (!world.audio.ctx.setSinkId) return null
++  const load = async () => {
++    setBusy(true)
++    setError(null)
++    try {
++      setDevices(await world.audio.getOutputDevices())
++    } catch {
++      setError('Allow browser audio permission to list your speakers and headphones.')
++    } finally {
++      setBusy(false)
++    }
++  }
++  const select = async deviceId => {
++    setError(null)
++    try {
++      await world.audio.setOutputDevice(deviceId)
++      setSelected(deviceId)
++    } catch {
++      setError('That output is unavailable. Refresh the list and choose another device.')
++    }
++  }
++  return (
++    <>
++      <FieldBtn
++        label='Audio output'
++        note={busy ? 'Loading…' : devices ? 'Refresh' : 'Choose'}
++        hint='Choose headphones or speakers for Hyperfy playback when streaming your Mac audio.'
++        onClick={() => !busy && load()}
++      />
++      {devices && (
++        <FieldSelect
++          label='Playback device'
++          hint='Use a physical output to keep Hyperfy playback out of the stream.'
++          options={[
++            { label: 'System default', value: '' },
++            ...devices.map(device => ({ label: device.label || 'Audio output', value: device.deviceId })),
++          ]}
++          value={selected}
++          onChange={select}
++        />
++      )}
++      {error && <p role='alert' style={{ padding: '0.5rem 1rem' }}>{error}</p>}
++    </>
++  )
++}

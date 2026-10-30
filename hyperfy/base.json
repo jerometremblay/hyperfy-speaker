@@ -1,0 +1,17 @@
+{
+  "repository": "jerometremblay/hyperfy",
+  "baseCommit": "ca59cd36cdfa1fd2753098f007b095a7f1bac3b2",
+  "files": [
+    "src/core/systems/ClientLiveKit.js",
+    "src/core/systems/ServerLiveKit.js",
+    "src/core/systems/ClientAudio.js",
+    "src/server/agent-api.js",
+    "src/server/agent-api.test.mjs",
+    "src/client/components/Sidebar.js",
+    "src/core/extras/SpeakerAudio.js",
+    "src/core/extras/SpeakerAudio.test.mjs",
+    "src/core/systems/ServerLiveKit.speaker.test.mjs",
+    "src/core/systems/ClientAudio.output.test.mjs",
+    "src/client/components/AudioOutputField.js"
+  ]
+}
