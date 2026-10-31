@@ -42,6 +42,7 @@ class Config:
     world_url: str = ""
     speaker_id: str = ""
     device: str = DEFAULT_DEVICE
+    input_mode: str = "device"
 
     @classmethod
     def load(cls) -> Config:
@@ -51,12 +52,23 @@ class Config:
         values = json.loads(path.read_text())
         if not isinstance(values, dict):
             raise ValueError("Configuration must be a JSON object.")
-        known = {key: values[key] for key in ("world_url", "speaker_id", "device") if key in values}
+        known = {
+            key: values[key]
+            for key in ("world_url", "speaker_id", "device", "input_mode")
+            if key in values
+        }
         if any(not isinstance(value, str) for value in known.values()):
             raise ValueError("Configuration fields must be strings.")
-        return cls(**known)
+        config = cls(**known)
+        config.validate_input()
+        return config
+
+    def validate_input(self) -> None:
+        if self.input_mode not in ("device", "airplay"):
+            raise ValueError("Audio input must be device or airplay.")
 
     def save(self) -> None:
+        self.validate_input()
         if self.world_url:
             self.world_url = normalize_world(self.world_url)
         path = config_path()

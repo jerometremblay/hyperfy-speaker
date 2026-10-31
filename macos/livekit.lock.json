@@ -1,0 +1,27 @@
+{
+  "pythonSdkVersion": "1.2.0",
+  "rustSdkCommit": "7f3ddc08bda60e318d4acdd1625b0723ac6c009f",
+  "sourceSha256": "5a870e63d8d6cdd9227b1095bea1f2cb662133f142cba9db8b64770a590f810b",
+  "upstreamFix": "https://github.com/livekit/rust-sdks/pull/1337",
+  "rustToolchain": "1.99.1",
+  "submodules": [
+    {
+      "name": "protocol",
+      "commit": "3fbe509850cb24aa90a0bc20134936698333dceb",
+      "url": "https://codeload.github.com/livekit/protocol/tar.gz/3fbe509850cb24aa90a0bc20134936698333dceb",
+      "path": "livekit-protocol/protocol",
+      "archiveRoot": "protocol-3fbe509850cb24aa90a0bc20134936698333dceb",
+      "probe": "livekit/agent/thread_schema_v1.sql",
+      "sha256": "56ab5173ba657ec84037a69679dfa8f1d7ec275913669ac5f5c5ddb878ba375a"
+    },
+    {
+      "name": "libyuv",
+      "commit": "917276084a49be726c90292ff0a6b0a3d571a6af",
+      "url": "https://chromium.googlesource.com/libyuv/libyuv/+archive/917276084a49be726c90292ff0a6b0a3d571a6af.tar.gz",
+      "path": "yuv-sys/libyuv",
+      "archiveRoot": null,
+      "probe": "include/libyuv.h",
+      "sha256": "b7e83170ec40719524e5acc2d645bb18eaf226629c3aa259ac50a69b4baec222"
+    }
+  ]
+}

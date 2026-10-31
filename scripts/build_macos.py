@@ -17,10 +17,15 @@ import tarfile
 import urllib.request
 from pathlib import Path
 
+from build_airplay import BUILD as AIRPLAY_BUILD
+from build_airplay import build_receiver
+from build_livekit import BUILD as LIVEKIT_BUILD
+from build_livekit import build_library
+
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / ".build"
 DIST = ROOT / "dist"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
 BUNDLE_ID = "org.hyperfy.speaker"
 MINIMUM_MACOS = "14.0"
 
@@ -166,6 +171,27 @@ def build_app(signing_identity: str) -> Path:
         env=worker_environment,
     )
     shutil.copytree(BUILD / "worker-dist/speaker-worker", resources / "speaker-worker")
+    library = build_library()
+    bundled_libraries = list(resources.rglob("liblivekit_ffi.dylib"))
+    if len(bundled_libraries) != 1:
+        raise RuntimeError("Expected exactly one bundled LiveKit native library")
+    shutil.copy2(library, bundled_libraries[0])
+    receiver = build_receiver()
+    shutil.copy2(receiver, resources / "shairport-sync")
+    notices = resources / "AirPlay Licenses"
+    notices.mkdir()
+    for folder in (AIRPLAY_BUILD / "sources").iterdir():
+        source = next(item for item in folder.iterdir() if item.is_dir())
+        target = notices / folder.name
+        target.mkdir()
+        for license_file in source.iterdir():
+            if license_file.is_file() and license_file.name.startswith(("LICENSE", "COPYING")):
+                shutil.copy2(license_file, target)
+    sdk_sources = next((LIVEKIT_BUILD / "source").iterdir())
+    for license_file in (sdk_sources / "LICENSE", sdk_sources / "livekit-ffi/WEBRTC_LICENSE.md"):
+        if license_file.exists():
+            shutil.copy2(license_file, resources / ("LiveKit-" + license_file.name))
+    shutil.copy(ROOT / "THIRD_PARTY.md", resources)
     shutil.copy(ROOT / "LICENSE", resources)
     info = {
         "CFBundleIdentifier": BUNDLE_ID,
@@ -203,6 +229,14 @@ def build_app(signing_identity: str) -> Path:
         str(ROOT / "macos/worker-entitlements.plist"),
         str(resources / "speaker-worker/speaker-worker"),
     )
+    command(
+        "/usr/bin/codesign",
+        "--force",
+        "--sign",
+        signing_identity,
+        *runtime_flags,
+        str(resources / "shairport-sync"),
+    )
     command("/usr/bin/codesign", "--force", "--sign", signing_identity, *runtime_flags, str(app))
     verify_deployment_target(app)
     return app
@@ -212,6 +246,7 @@ def verify_deployment_target(app: Path) -> None:
     candidates = [
         app / "Contents/MacOS/HyperfySpeaker",
         app / "Contents/Resources/speaker-worker/speaker-worker",
+        app / "Contents/Resources/shairport-sync",
         *[item for item in app.rglob("*") if item.suffix in (".so", ".dylib")],
     ]
     minimum = tuple(int(part) for part in MINIMUM_MACOS.split("."))
@@ -247,6 +282,8 @@ def build_package(driver: Path, app: Path, installer_identity: str | None) -> Pa
     shutil.copytree(app, applications / app.name)
     sources = payload / "Library/Application Support/Hyperfy Speaker/Sources"
     sources.mkdir(parents=True)
+    for source_archive in LIVEKIT_BUILD.glob("*.tar.gz"):
+        shutil.copy2(source_archive, sources / ("livekit-" + source_archive.name))
     archive = sources / f"hyperfy-speaker-{VERSION}-source.tar.gz"
     with tarfile.open(archive, "w:gz") as output:
         for relative in [
@@ -268,6 +305,8 @@ def build_package(driver: Path, app: Path, installer_identity: str | None) -> Pa
             if path.exists():
                 output.add(path, arcname="hyperfy-speaker/" + relative, filter=source_filter)
         output.add(BUILD / "blackhole-source", arcname="hyperfy-speaker/third_party/BlackHole")
+        for archive in AIRPLAY_BUILD.glob("*.tar.*"):
+            output.add(archive, arcname="hyperfy-speaker/third_party/airplay/" + archive.name)
     scripts = BUILD / "installer-scripts"
     scripts.mkdir(exist_ok=True)
     postinstall = scripts / "postinstall"

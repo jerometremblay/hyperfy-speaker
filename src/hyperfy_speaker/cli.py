@@ -26,6 +26,7 @@ def main() -> int:
     configure.add_argument("--world", required=True)
     configure.add_argument("--speaker-id", default=None)
     configure.add_argument("--device", default=None)
+    configure.add_argument("--input-mode", choices=("device", "airplay"), default=None)
     setup = commands.add_parser(
         "setup", help="Create a speaker app without overwriting existing objects"
     )
@@ -34,6 +35,7 @@ def main() -> int:
     publish.add_argument(
         "--tone", action="store_true", help="Publish a generated test tone instead"
     )
+    publish.add_argument("--input-mode", choices=("device", "airplay"), default=None)
     publish.add_argument("--duration", type=float, help="Stop after this number of seconds")
     args = parser.parse_args()
     try:
@@ -48,6 +50,8 @@ def main() -> int:
                 config.speaker_id = args.speaker_id
             if args.device is not None:
                 config.device = args.device
+            if args.input_mode is not None:
+                config.input_mode = args.input_mode
             config.save()
             print(json.dumps(asdict(config)))
         elif args.command == "setup":
@@ -61,6 +65,8 @@ def main() -> int:
                 not math.isfinite(args.duration) or args.duration <= 0
             ):
                 raise ValueError("Duration must be a positive number.")
+            if args.input_mode is not None:
+                config.input_mode = args.input_mode
             asyncio.run(run(config, tone=args.tone, duration=args.duration))
         return 0
     except KeyboardInterrupt:

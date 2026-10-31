@@ -1,0 +1,22 @@
+{
+  "shairport-sync": {
+    "url": "https://github.com/mikebrady/shairport-sync/archive/refs/tags/5.6.1.tar.gz",
+    "sha256": "48d2ac1afa52d86766bc328694fa5d2d5f13a674f3e980f00d95d957453e5ee1"
+  },
+  "ffmpeg": {
+    "url": "https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz",
+    "sha256": "8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"
+  },
+  "libconfig": {
+    "url": "https://github.com/hyperrealm/libconfig/archive/refs/tags/v1.8.3.tar.gz",
+    "sha256": "683f723d647befcdb36e1a4a61a83ae8c89dc7959ca872a7407b6c8152104162"
+  },
+  "openssl": {
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.5.9/openssl-3.5.9.tar.gz",
+    "sha256": "603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a"
+  },
+  "popt": {
+    "url": "https://ftp.osuosl.org/pub/rpm/popt/releases/popt-1.x/popt-1.19.tar.gz",
+    "sha256": "c25a4838fc8e4c1c8aacb8bd620edb3084a3d63bf8987fdad3ca2758c63240f9"
+  }
+}

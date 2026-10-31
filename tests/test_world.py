@@ -5,7 +5,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 
 from hyperfy_speaker.config import Config
-from hyperfy_speaker.world import WorldClient, WorldError
+from hyperfy_speaker.world import LEGACY_SPEAKER_SCRIPT, SPEAKER_SOURCE, WorldClient, WorldError
 
 
 @pytest.fixture
@@ -21,6 +21,9 @@ def server():
             self.handle_request()
 
         def do_POST(self):
+            self.handle_request()
+
+        def do_PATCH(self):
             self.handle_request()
 
         def handle_request(self):
@@ -39,10 +42,16 @@ def server():
                 output = {"url": "asset://" + "a" * 64 + ".js"}
             elif self.command == "POST" and path in ("/apps", "/entities"):
                 prefix = path + "/" + data["id"]
-                objects[prefix] = data
+                objects[prefix] = {"version": 0, **data}
                 status, output = 201, data
             elif path in objects:
                 output = objects[path]
+                if self.command == "PATCH":
+                    if data["version"] != output["version"]:
+                        status = 409
+                    else:
+                        output.update(data)
+                        output["version"] += 1
             elif path.endswith("/speaker-session"):
                 output = {"wsUrl": "wss://rtc.example", "token": "speaker-only-token"}
             else:
@@ -97,3 +106,34 @@ def test_redirects_never_forward_the_write_token(server):
         client.request("GET", "/redirect")
     assert error.value.status == 302
     assert not any(call[1].endswith("/redirect-target") for call in calls)
+
+
+@pytest.mark.parametrize(
+    "legacy_script",
+    [
+        LEGACY_SPEAKER_SCRIPT,
+        "asset://b792a77b31b1e3c4259043bb80ef37b095e206053304ed5ad18f6371b57246c4.js",
+    ],
+)
+def test_known_legacy_speaker_upgrades_without_replacing_saved_ranges_or_placement(
+    server, legacy_script
+):
+    origin, objects, _ = server
+    client = WorldClient(Config(origin), token="writer")
+    speaker_id = client.create_speaker([1, 0, 2])
+    app = next(value for key, value in objects.items() if key.startswith("/apps/"))
+    app["script"] = legacy_script
+    app["props"] = {"refDistance": 9, "maxDistance": 50}
+    assert client.create_speaker([9, 9, 9]) == speaker_id
+    assert app["script"] != legacy_script
+    assert app["version"] == 1
+    assert app["props"] == {"refDistance": 9, "maxDistance": 50}
+    assert objects["/entities/" + speaker_id]["position"] == [1, 0, 2]
+
+
+def test_template_exposes_jukebox_distance_properties_on_server_and_client():
+    import re
+
+    fields = [match.group(1) for match in re.finditer(r"key: '([^']+)'", SPEAKER_SOURCE)]
+    assert fields == ["volume", "spatial", "refDistance", "maxDistance"]
+    assert SPEAKER_SOURCE.index("app.configure") < SPEAKER_SOURCE.index("if (world.isClient)")

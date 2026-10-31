@@ -4,12 +4,43 @@ A selectable macOS sound output that streams to a movable, spatial speaker in
 Hyperfy. The Mac output is named **Hyperfy Speaker**. People near the in-world
 speaker hear the stream through their normal Music volume control.
 
-This is a virtual Core Audio device. Phone Bluetooth reception is a separate
+The app can receive AirPlay audio directly or capture a virtual Core Audio device. Phone Bluetooth reception is a separate
 feature and is not included.
 
-## Use the Mac app
+## Play directly from Music or an iPhone
 
-1. Install `dist/HyperfySpeaker-0.1.0-arm64.pkg` (the build names the current Mac
+1. Open Hyperfy Speaker. Stop streaming before changing settings.
+2. In Settings, choose **Audio source → AirPlay — Hyperfy Speaker**, then Save.
+3. Start Streaming. The app shows **AirPlay ready — Hyperfy Speaker**.
+4. In Music's AirPlay menu, or an iPhone's audio AirPlay picker on the same network,
+   choose **Hyperfy Speaker**. Play a song.
+5. In Hyperfy, keep Audio output set to your physical speakers or headphones.
+   The same in-world speaker plays the incoming music.
+
+Your Mac's normal output can stay on its physical speakers. No virtual driver or
+microphone permission is needed in AirPlay mode. Choose **Mac virtual output** to
+use the existing system-audio capture instead; the two inputs are alternatives.
+AirPlay mode starts one bundled Shairport Sync receiver only while streaming is
+running. Stop Streaming withdraws the receiver from the AirPlay menu. One sender
+plays at a time; selecting it from another sender replaces the current stream. This build uses classic AirPlay audio, not AirPlay 2 multiroom or
+screen mirroring. Allow a few seconds before audio starts.
+
+The receiver buffers decoded audio, outputs fixed 48 kHz stereo 16-bit PCM through
+an anonymous pipe, and the existing publisher sends it to LiveKit. No audio is
+recorded. Network audio has two seconds of capture headroom and a 500 ms publisher
+queue. Status reports frame counters without samples, metadata, or credentials.
+The receiver stays alive through a LiveKit reconnect.
+
+From source: `python scripts/build_airplay.py` and `python scripts/build_livekit.py`, then
+`hyperfy-speaker run --input-mode airplay`. The native app includes the receiver.
+To build, install Apple's command line tools and Autoconf, Automake, Libtool and
+pkg-config (for example `brew install autoconf automake libtool pkgconf`).
+The recipe downloads checksum-pinned sources into `.build/airplay`, builds their
+libraries statically, and needs no Homebrew libraries in the installed app.
+
+## Use the Mac virtual output
+
+1. Install `dist/HyperfySpeaker-0.2.0-arm64.pkg` (the build names the current Mac
    architecture). The installer adds the driver and `/Applications/Hyperfy Speaker.app`.
    Installing the driver restarts Core Audio and briefly interrupts current audio.
 2. Open **Hyperfy Speaker**. Its streaming status and controls appear in a window
@@ -26,7 +57,11 @@ feature and is not included.
    select it as the output of your music application. Keep the helper open and
    check that it says **Streaming to Hyperfy**. If stopped, choose **Start Streaming**.
 7. Move the in-world speaker with Hyperfy's existing editor. Its sound follows
-   that instance and fades out at 40 meters.
+   that instance. In its app settings, **Volume** sets the overall speaker level (0–1). **Near** controls the radius of full-volume
+   stereo and **Far** controls where sound becomes silent. Between them, volume
+   fades linearly while stereo gradually blends into a directional point source.
+   These use the jukebox's existing `refDistance` / `maxDistance` settings and
+   defaults of 2 m / 30 m. Disable **Localized sound** for stereo everywhere.
 
 Selecting a separate Hyperfy playback device keeps the received stream from
 feeding back into the virtual output. The helper never changes your Mac's
@@ -73,7 +108,8 @@ Use production credentials and TLS for a public service.
 
 ## Develop and build
 
-Requires macOS 14+, Apple's Command Line Tools, Python 3.11–3.14, and `uv`.
+Requires macOS 14+, Apple's Command Line Tools, Python 3.11–3.14, `uv`,
+and the AirPlay build tools listed above, Rust/Cargo, CMake and Protobuf (`protoc`).
 Full Xcode is not required. The driver builds for both Intel and Apple Silicon;
 the bundled Python worker targets the Mac architecture used for the build.
 
@@ -98,7 +134,9 @@ world.
 
 The build downloads BlackHole source pinned by commit and SHA-256, builds the
 branded two-channel 48 kHz driver, freezes the worker, compiles the native menu
-bar app, and packages everything. It includes corresponding source and licenses.
+bar app, and packages everything. It includes corresponding source and licenses. The official LiveKit native library is
+rebuilt with its upstream stereo-advertisement fix so left/right channels remain
+distinct through the transport; the isolated smoke test checks this explicitly.
 Generated files stay under `.build/` and `dist/`.
 
 The default build uses local ad hoc signatures. For a distributable, notarized

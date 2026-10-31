@@ -1,6 +1,6 @@
 [project]
 name = "hyperfy-speaker"
-version = "0.1.0"
+version = "0.2.0"
 description = "A macOS virtual audio output that streams to a spatial speaker in Hyperfy."
 requires-python = ">=3.11,<3.15"
 license = "GPL-3.0-only"

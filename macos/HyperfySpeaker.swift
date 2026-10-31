@@ -50,6 +50,7 @@ final class SpeakerApp: NSObject, NSApplicationDelegate {
     private let speakerField = NSTextField()
     private let tokenField = NSSecureTextField()
     private let devicePicker = NSPopUpButton()
+    private let inputModePicker = NSPopUpButton()
     private var errorField = NSTextField(labelWithString: "")
     private var outputBuffer = Data()
     private var settingsBusy = false
@@ -114,18 +115,18 @@ final class SpeakerApp: NSObject, NSApplicationDelegate {
     @objc private func showStatus() {
         if statusWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 480, height: 200),
+                contentRect: NSRect(x: 0, y: 0, width: 480, height: 225),
                 styleMask: [.titled, .closable], backing: .buffered, defer: false
             )
             window.title = "Hyperfy Speaker — Streaming"
             window.isReleasedWhenClosed = false
             let content = window.contentView!
             statusLabel.font = .boldSystemFont(ofSize: 18)
-            statusLabel.frame = NSRect(x: 20, y: 150, width: 440, height: 26)
+            statusLabel.frame = NSRect(x: 20, y: 175, width: 440, height: 26)
             content.addSubview(statusLabel)
             let help = NSTextField(wrappingLabelWithString:
-                "Mac output: Hyperfy Speaker\nHyperfy audio output: your headphones or Mac speakers\nKeep this app running while playing music.")
-            help.frame = NSRect(x: 20, y: 62, width: 440, height: 70)
+                "Choose Hyperfy Speaker in Music’s or your iPhone’s AirPlay menu when using AirPlay input.\nHyperfy audio output: your headphones or Mac speakers.\nKeep this app running while playing music.")
+            help.frame = NSRect(x: 20, y: 65, width: 440, height: 95)
             content.addSubview(help)
             startButton = NSButton(title: "Start Streaming", target: self, action: #selector(startStreaming))
             stopButton = NSButton(title: "Stop Streaming", target: self, action: #selector(stopStreaming))
@@ -186,6 +187,8 @@ final class SpeakerApp: NSObject, NSApplicationDelegate {
 
     private func workerEnvironment() -> [String: String] {
         var environment = ProcessInfo.processInfo.environment
+        environment["HYPERFY_SPEAKER_AIRPLAY_BINARY"] = Bundle.main.resourceURL!
+            .appendingPathComponent("shairport-sync").path
         if environment["HYPERFY_SPEAKER_TOKEN"] == nil,
            let world = configuration()["world_url"], let token = loadToken(world: world) {
             environment["HYPERFY_SPEAKER_TOKEN"] = token
@@ -255,6 +258,9 @@ final class SpeakerApp: NSObject, NSApplicationDelegate {
             case "streaming":
                 setStatus("Streaming to Hyperfy")
                 statusItem.button?.image = NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: "Streaming")
+            case "airplay_ready":
+                setStatus("AirPlay ready — Hyperfy Speaker")
+                statusItem.button?.image = NSImage(systemSymbolName: "airplay.audio", accessibilityDescription: "AirPlay ready")
             case "connecting": setStatus("Connecting…")
             case "reconnecting": setStatus("Reconnecting…")
             case "error":
@@ -275,7 +281,7 @@ final class SpeakerApp: NSObject, NSApplicationDelegate {
     @objc private func showSettings() {
         if settingsWindow == nil {
             let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 520, height: 375),
+                contentRect: NSRect(x: 0, y: 0, width: 520, height: 425),
                 styleMask: [.titled, .closable], backing: .buffered, defer: false
             )
             window.title = "Hyperfy Speaker"
@@ -283,21 +289,25 @@ final class SpeakerApp: NSObject, NSApplicationDelegate {
             let content = window.contentView!
             let fields: [(String, NSView)] = [
                 ("World URL", worldField), ("World write token", tokenField),
-                ("Speaker instance ID", speakerField), ("Audio input", devicePicker),
+                ("Speaker instance ID", speakerField), ("Audio source", inputModePicker),
+                ("Mac audio input", devicePicker),
             ]
             for (index, entry) in fields.enumerated() {
-                let y = 320 - CGFloat(index * 48)
+                let y = 370 - CGFloat(index * 48)
                 let label = NSTextField(labelWithString: entry.0)
                 label.frame = NSRect(x: 20, y: y + 4, width: 145, height: 20)
                 entry.1.frame = NSRect(x: 168, y: y, width: 330, height: 27)
                 content.addSubview(label)
                 content.addSubview(entry.1)
             }
+            inputModePicker.addItems(withTitles: ["Mac virtual output", "AirPlay — Hyperfy Speaker"])
+            inputModePicker.target = self
+            inputModePicker.action = #selector(inputModeChanged)
             worldField.placeholderString = "https://your-world.example"
             tokenField.placeholderString = "Leave blank to keep the saved Keychain token"
             speakerField.placeholderString = "Filled by Create Speaker in World"
             let help = NSTextField(wrappingLabelWithString:
-                "Select your headphones in Hyperfy’s Audio settings, then choose Hyperfy Speaker as your Mac’s sound output. Move the speaker in the world’s editor.")
+                "AirPlay: choose Hyperfy Speaker in Music’s or your iPhone’s AirPlay menu. Mac virtual output: choose Hyperfy Speaker as your Mac’s sound output. In Hyperfy, select your physical speakers or headphones.")
             help.frame = NSRect(x: 20, y: 86, width: 478, height: 66)
             content.addSubview(help)
             errorField = NSTextField(wrappingLabelWithString: "")
@@ -316,6 +326,8 @@ final class SpeakerApp: NSObject, NSApplicationDelegate {
         worldField.stringValue = config["world_url"] ?? ""
         speakerField.stringValue = config["speaker_id"] ?? ""
         tokenField.stringValue = ""
+        inputModePicker.selectItem(at: config["input_mode"] == "airplay" ? 1 : 0)
+        inputModeChanged()
         errorField.stringValue = ""
         devicePicker.removeAllItems()
         devicePicker.addItem(withTitle: config["device"] ?? "Hyperfy Speaker")
@@ -332,6 +344,10 @@ final class SpeakerApp: NSObject, NSApplicationDelegate {
         settingsWindow?.makeKeyAndOrderFront(nil)
     }
 
+    @objc private func inputModeChanged() {
+        devicePicker.isEnabled = inputModePicker.indexOfSelectedItem == 0
+    }
+
     @objc private func saveSettings() {
         guard !settingsBusy, !operationBusy, workerProcess == nil else {
             errorField.stringValue = "Stop streaming before changing settings."
@@ -343,6 +359,7 @@ final class SpeakerApp: NSObject, NSApplicationDelegate {
             "configure", "--world", worldField.stringValue,
             "--speaker-id", speakerField.stringValue,
             "--device", devicePicker.titleOfSelectedItem ?? "Hyperfy Speaker",
+            "--input-mode", inputModePicker.indexOfSelectedItem == 1 ? "airplay" : "device",
         ]) { [weak self] code, data in
             guard let self else { return }
             self.settingsBusy = false

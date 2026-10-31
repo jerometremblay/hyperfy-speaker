@@ -16,9 +16,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from livekit import rtc
-
 from hyperfy_speaker.config import Config
+from hyperfy_speaker.publisher import configure_livekit
 from hyperfy_speaker.world import WorldClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,21 +43,29 @@ def await_http(url: str, process: subprocess.Popen, *, attempts=100) -> None:
 
 async def verify_audio(
     session: dict, environment: dict, worker: list[str], workspace: Path
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
+    from livekit import rtc
+
     room = rtc.Room()
     received = asyncio.Event()
     count = 0
     peak = 0
+    separation = 0
     tasks = []
 
     async def consume(track):
-        nonlocal count, peak
+        nonlocal count, peak, separation
         stream = rtc.AudioStream(track, sample_rate=48_000, num_channels=2)
         try:
             async for event in stream:
                 count += 1
                 peak = max(peak, max(abs(sample) for sample in event.frame.data))
-                if count >= 5 and peak > 500:
+                samples = event.frame.data
+                separation = max(
+                    separation,
+                    max(abs(samples[i] - samples[i + 1]) for i in range(0, len(samples), 2)),
+                )
+                if count >= 50 and peak > 500:
                     received.set()
                     return
         finally:
@@ -72,10 +79,13 @@ async def verify_audio(
     process = None
     try:
         await room.connect(session["wsUrl"], session["token"])
+        publisher_environment = dict(environment)
+        if len(worker) == 1:
+            publisher_environment.pop("LIVEKIT_LIB_PATH", None)
         process = subprocess.Popen(
             [*worker, "run", "--tone", "--duration", "3"],
             cwd=ROOT,
-            env=environment,
+            env=publisher_environment,
             stdout=subprocess.PIPE,
             stderr=(workspace / "worker.log").open("wb"),
         )
@@ -85,7 +95,8 @@ async def verify_audio(
         assert any(json.loads(line).get("state") == "streaming" for line in output.splitlines()), (
             "Publisher never reached streaming state."
         )
-        return count, peak
+        assert separation > 500, "LiveKit downmixed the stereo test tone to mono."
+        return count, peak, separation
     finally:
         if process is not None and process.poll() is None:
             process.terminate()
@@ -101,6 +112,7 @@ def main() -> None:
     parser.add_argument("--hyperfy", type=Path, required=True)
     parser.add_argument("--worker", type=Path, help="Test the frozen worker executable instead")
     args = parser.parse_args()
+    configure_livekit()
     checkout = args.hyperfy.resolve()
     if not (checkout / "src/core/systems/ClientLiveKit.js").is_file():
         parser.error("Provide a Hyperfy engine checkout with the speaker patch applied.")
@@ -116,7 +128,7 @@ def main() -> None:
         (engine / ".env").write_text("")
         environment = {
             key: os.environ[key]
-            for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
+            for key in ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LIVEKIT_LIB_PATH")
             if key in os.environ
         }
         # Building the snapshot leaves the user's build and running world untouched.
@@ -225,8 +237,13 @@ def main() -> None:
                 if args.worker
                 else [str(ROOT / ".venv/bin/python"), "-m", "hyperfy_speaker.cli"]
             )
-            count, peak = asyncio.run(verify_audio(session, environment, worker, workspace))
-            print(f"PASS: idempotent world setup; {count} received audio frames; peak {peak}.")
+            count, peak, separation = asyncio.run(
+                verify_audio(session, environment, worker, workspace)
+            )
+            print(
+                f"PASS: idempotent world setup; {count} received audio frames; "
+                f"peak {peak}; stereo separation {separation}."
+            )
         except Exception:
             # Only isolated, synthetic credentials appear in these test service logs.
             for name in ("build.log", "world.log", "worker.log", "observer.log"):

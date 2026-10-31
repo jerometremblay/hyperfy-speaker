@@ -10,6 +10,16 @@ from .config import Config, normalize_world
 
 SPEAKER_SOURCE = """
 // Audio is anchored to this app by Hyperfy's native LiveKit speaker integration.
+app.configure([
+  { key: 'volume', type: 'range', label: 'Volume',
+    min: 0, max: 1, step: 0.05, initial: 1 },
+  { key: 'spatial', type: 'toggle', label: 'Localized sound',
+    trueLabel: 'Yes', falseLabel: 'No (stereo everywhere)', initial: true },
+  { key: 'refDistance', type: 'range', label: 'Near — full volume & stereo (m)',
+    min: 1, max: 20, step: 1, initial: 2 },
+  { key: 'maxDistance', type: 'range', label: 'Far — maximum range (m)',
+    min: 5, max: 100, step: 5, initial: 30 },
+])
 if (world.isClient) {
   const box = app.create('prim', {
     type: 'box', size: [0.45, 0.7, 0.3],
@@ -25,6 +35,11 @@ if (world.isClient) {
   }
 }
 """.strip()
+
+
+LEGACY_SPEAKER_SCRIPT = (
+    "asset://d4c6732fcf6dae56d46020f0104dee2863cdaef586fbb69adfa359e5e93cbad2.js"
+)
 
 
 class WorldError(RuntimeError):
@@ -74,7 +89,16 @@ class WorldClient:
         script = self.request("POST", "/scripts", {"source": SPEAKER_SOURCE})
         try:
             blueprint = self.request("GET", "/apps/" + blueprint_id)
-            if blueprint.get("script") != script["url"]:
+            if blueprint.get("script") in (
+                LEGACY_SPEAKER_SCRIPT,
+                "asset://b792a77b31b1e3c4259043bb80ef37b095e206053304ed5ad18f6371b57246c4.js",
+            ):
+                self.request(
+                    "PATCH",
+                    "/apps/" + blueprint_id,
+                    {"version": blueprint["version"], "script": script["url"]},
+                )
+            elif blueprint.get("script") != script["url"]:
                 raise ValueError(
                     "The existing speaker script has changed. Setup will not overwrite it."
                 )
