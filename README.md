@@ -4,6 +4,22 @@ A selectable macOS sound output that streams to a movable, spatial speaker in
 Hyperfy. The Mac output is named **Hyperfy Speaker**. People near the in-world
 speaker hear the stream through their normal Music volume control.
 
+## Download the executable (macOS)
+
+**[Download Hyperfy Speaker 0.2.0 — compiled macOS installer (.pkg)](https://github.com/jerometremblay/hyperfy-speaker/releases/download/v0.2.0/HyperfySpeaker-0.2.0-arm64.pkg)**
+
+For **Apple Silicon Macs (M-series), macOS 14 or later**. Open the downloaded
+`.pkg` to install the compiled **Hyperfy Speaker.app** in `/Applications`.
+The app includes its runtime; you do not need Python, Xcode, or other build tools
+on your Mac to run it.
+
+Choose the **`.pkg` asset** to install the app. GitHub's **Source code (zip)** and
+**Source code (tar.gz)** downloads contain the source files.
+[Release notes and SHA-256 checksum](https://github.com/jerometremblay/hyperfy-speaker/releases/tag/v0.2.0).
+
+This build is not Apple Developer ID signed or notarized. The Hyperfy world
+still needs the engine integration and LiveKit setup described below.
+
 The app can receive AirPlay audio directly or capture a virtual Core Audio device. Phone Bluetooth reception is a separate
 feature and is not included.
 
@@ -40,8 +56,8 @@ libraries statically, and needs no Homebrew libraries in the installed app.
 
 ## Use the Mac virtual output
 
-1. Install `dist/HyperfySpeaker-0.2.0-arm64.pkg` (the build names the current Mac
-   architecture). The installer adds the driver and `/Applications/Hyperfy Speaker.app`.
+1. Install the [compiled macOS installer](https://github.com/jerometremblay/hyperfy-speaker/releases/download/v0.2.0/HyperfySpeaker-0.2.0-arm64.pkg).
+   It adds the driver and `/Applications/Hyperfy Speaker.app`.
    Installing the driver restarts Core Audio and briefly interrupts current audio.
 2. Open **Hyperfy Speaker**. Its streaming status and controls appear in a window
    and in the menu bar. With saved world and speaker settings, streaming starts
